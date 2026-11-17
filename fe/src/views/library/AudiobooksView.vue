@@ -96,6 +96,17 @@
             </button>
           </div>
         </div>
+        <button
+          v-if="groupBy === 'series'"
+          class="toolbar-btn"
+          :class="{ active: primarySeriesOnly }"
+          type="button"
+          :aria-pressed="primarySeriesOnly"
+          title="Show only each book's primary series"
+          @click="togglePrimarySeriesOnly"
+        >
+          Primary only
+        </button>
         <button class="toolbar-btn" @click="refreshLibrary">
           <PhArrowClockwise />
           Refresh
@@ -1352,6 +1363,11 @@ const GROUP_BY_MODES = ['books', 'authors', 'series'] as const
 type GroupByMode = (typeof GROUP_BY_MODES)[number]
 const DEFAULT_VISIBLE_RANGE_END = 20
 const groupBy = ref<'books' | 'authors' | 'series'>('books')
+const PRIMARY_SERIES_ONLY_KEY = 'listenarr.seriesPrimaryOnly'
+const primarySeriesOnly = ref(false)
+try {
+  primarySeriesOnly.value = localStorage.getItem(PRIMARY_SERIES_ONLY_KEY) === '1'
+} catch {}
 const showGroupMenu = ref(false)
 
 function normalizeGroupBy(value: unknown): GroupByMode | null {
@@ -1399,12 +1415,17 @@ watch(groupBy, (v) => {
 
 // All series a book belongs to (deduped), so a multi-series book is grouped under each
 // of its series rather than only its primary. Falls back to the legacy single series.
+// Primary-only keeps the marked membership, or the first named one when none is marked.
 function getBookSeriesNames(book: Audiobook): string[] {
   const memberships = book.seriesMemberships
   if (memberships && memberships.length > 0) {
     const names: string[] = []
     const seen = new Set<string>()
-    for (const membership of memberships) {
+    const source = primarySeriesOnly.value
+      ? memberships.filter((membership) => membership.isPrimary)
+      : memberships
+    const selected = source.length > 0 ? source : primarySeriesOnly.value ? [memberships[0]] : []
+    for (const membership of selected) {
       const name = (membership.seriesName || '').trim()
       if (!name) continue
       const dedupeKey = name.toLowerCase()
@@ -1416,6 +1437,13 @@ function getBookSeriesNames(book: Audiobook): string[] {
   }
   const legacy = (book.series || '').trim()
   return legacy ? [legacy] : []
+}
+
+function togglePrimarySeriesOnly() {
+  primarySeriesOnly.value = !primarySeriesOnly.value
+  try {
+    localStorage.setItem(PRIMARY_SERIES_ONLY_KEY, primarySeriesOnly.value ? '1' : '0')
+  } catch {}
 }
 
 const groupedCollections = computed(() => {
@@ -2473,6 +2501,8 @@ defineExpose({
   setGroupBy,
   groupedCollections,
   showItemDetails,
+  primarySeriesOnly,
+  togglePrimarySeriesOnly,
 })
 </script>
 

@@ -20,6 +20,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import AudiobooksView from '@/views/library/AudiobooksView.vue'
+import type { Audiobook } from '@/types'
 import { useLibraryStore } from '@/stores/library'
 // apiService stubbed in vi.mock below if needed
 
@@ -46,9 +47,10 @@ vi.mock('@/services/api', () => ({
 
 type AudiobooksVm = {
   setGroupBy?: (value: string) => Promise<void> | void
-  groupedCollections?: Array<{ name: string; count: number; coverUrl?: string }>
+  groupedCollections?: Array<{ name: string; count: number; coverUrl?: string; coverUrls?: string[] }>
   showItemDetails?: boolean
-  groupBy?: string
+  primarySeriesOnly?: boolean
+  togglePrimarySeriesOnly?: () => void
   visibleRange?: { start: number; end: number }
   confirmDelete?: (audiobook: import('@/types').Audiobook) => Promise<void>
   deleteTarget?: import('@/types').Audiobook | null
@@ -70,6 +72,7 @@ describe('AudiobooksView', () => {
       reason: null,
       fallbackAction: 'RemoveFromLibraryOnly',
     })
+    localStorage.removeItem('listenarr.seriesPrimaryOnly')
   })
 
   it('shows extra details in grid view when showItemDetails is enabled', async () => {
@@ -405,6 +408,71 @@ describe('AudiobooksView Grouping', () => {
       count: 1,
       coverUrls: ['cover3.jpg'],
     })
+  })
+
+  it('hides non-primary series when the primary-only toggle is on', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/', name: 'home', component: { template: '<div />' } },
+        { path: '/audiobooks', name: 'audiobooks', component: AudiobooksView },
+      ],
+    })
+    await router.push('/audiobooks')
+    await router.isReady().catch(() => {})
+
+    const store = useLibraryStore()
+    store.audiobooks = [
+      {
+        id: 1,
+        title: 'The Way of Kings',
+        authors: ['Brandon Sanderson'],
+        series: 'The Stormlight Archive',
+        seriesMemberships: [
+          { seriesName: 'The Stormlight Archive', seriesNumber: '1', isPrimary: true },
+          { seriesName: 'The Cosmere', seriesNumber: '4', isPrimary: false },
+        ],
+        imageUrl: 'cover1.jpg',
+        files: [],
+      },
+    ] as Audiobook[]
+    store.fetchLibrary = vi.fn(async () => undefined)
+
+    const wrapper = mount(AudiobooksView, {
+      global: {
+        plugins: [pinia, router],
+        stubs: [
+          'BulkEditModal',
+          'EditAudiobookModal',
+          'CustomFilterModal',
+          'FiltersDropdown',
+          'CustomSelect',
+        ],
+      },
+    })
+    await flushPromises()
+
+    const vm = getVm(wrapper)
+    await vm.setGroupBy?.('series')
+    await wrapper.vm.$nextTick()
+
+    expect(vm.groupedCollections?.map((group) => group.name).sort()).toEqual([
+      'The Cosmere',
+      'The Stormlight Archive',
+    ])
+
+    vm.togglePrimarySeriesOnly?.()
+    await wrapper.vm.$nextTick()
+
+    expect(vm.primarySeriesOnly).toBe(true)
+    expect(vm.groupedCollections).toEqual([
+      { name: 'The Stormlight Archive', count: 1, coverUrls: ['cover1.jpg'] },
+    ])
+    expect(wrapper.get('button[title="Show only each book\'s primary series"]').classes()).toContain(
+      'active',
+    )
   })
 
   it('updates toolbar sort options and sorts grouped collections by count/name depending on grouping', async () => {
