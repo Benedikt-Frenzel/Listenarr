@@ -430,6 +430,17 @@
                   >#{{ audiobook.seriesNumber }}</span
                 >{{ safeText(audiobook.title) }}
               </div>
+              <div v-if="audiobook.otherEditions?.length" class="edition-note">
+                <button
+                  v-for="edition in audiobook.otherEditions"
+                  :key="edition.id"
+                  type="button"
+                  class="edition-link"
+                  @click.stop="router.push(`/audiobooks/${edition.id}`)"
+                >
+                  {{ edition.label }}
+                </button>
+              </div>
               <div class="audiobook-author">
                 {{
                   audiobook.authors
@@ -586,6 +597,9 @@
                 <div class="status-overlay">
                   <div v-if="!showItemDetails" class="audiobook-title collection-title">
                     {{ safeText(audiobook.title) }}
+                  </div>
+                  <div v-if="audiobook.otherEditions?.length" class="edition-note">
+                    {{ audiobook.otherEditions.length + 1 }} editions
                   </div>
                   <div v-if="!showItemDetails" class="audiobook-author collection-author">
                     {{
@@ -862,6 +876,7 @@ interface CollectionDisplayItem extends Audiobook {
   key: string
   inLibrary: boolean
   addMetadata?: AudibleBookMetadata | null
+  otherEditions?: Array<{ id: number; label: string }>
 }
 
 type RemoteCatalogBook = AuthorCatalogBook | SeriesCatalogBook
@@ -1294,7 +1309,8 @@ const audiobooks = computed<CollectionDisplayItem[]>(() => {
     mergedItems = localItems.map(mapLibraryItem)
   }
 
-  const searched = mergedItems.filter((book) =>
+  const collapsed = type.value === 'series' ? collapseSeriesEditions(mergedItems) : mergedItems
+  const searched = collapsed.filter((book) =>
     book.title.toLowerCase().includes(searchQuery.value.toLowerCase()),
   )
 
@@ -1312,6 +1328,43 @@ const audiobooks = computed<CollectionDisplayItem[]>(() => {
   })
 })
 
+function collapseSeriesEditions(items: CollectionDisplayItem[]): CollectionDisplayItem[] {
+  const groups = new Map<string, CollectionDisplayItem[]>()
+  for (const item of items) {
+    const title = normalizeCollectionText(item.title)
+    if (!title) {
+      groups.set(`raw-${item.key}`, [item])
+      continue
+    }
+    const key = `${title}::${normalizeCollectionText(item.seriesNumber)}`
+    const group = groups.get(key) ?? []
+    group.push(item)
+    groups.set(key, group)
+  }
+
+  return [...groups.values()].map((group) => {
+    if (group.length === 1) return group[0]
+    const ranked = [...group].sort((left, right) => editionRank(right) - editionRank(left))
+    const [face, ...rest] = ranked
+    return {
+      ...face,
+      otherEditions: rest
+        .filter((edition) => edition.inLibrary && edition.id > 0)
+        .map((edition) => ({ id: edition.id, label: editionLabel(edition) })),
+    }
+  })
+}
+
+function editionRank(book: CollectionDisplayItem): number {
+  const year = Number(book.publishYear) || 0
+  return (book.inLibrary ? 1_000_000 : 0) + year * 100
+}
+
+function editionLabel(book: CollectionDisplayItem): string {
+  const year = book.publishYear?.toString() || ''
+  const narrator = book.narrators?.[0] || ''
+  return [year, narrator].filter(Boolean).join(' · ') || 'Other edition'
+}
 const baseSortOptions = [
   { value: 'series-position', label: 'Series Position' },
   { value: 'title', label: 'Title' },
@@ -4470,6 +4523,23 @@ defineExpose({
   justify-self: end;
 }
 
+.edition-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+  color: #9aa4b2;
+  font-size: 12px;
+}
+
+.edition-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
 .list-header {
   display: grid;
   grid-template-columns: 40px 64px 1fr auto 120px;
