@@ -15,6 +15,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
@@ -26,6 +27,9 @@ namespace Listenarr.Infrastructure.DownloadClients.Sabnzbd
         ILogger logger,
         string clientType)
     {
+        private const int HistoryPageSize = 100;
+        private const int MaxHistorySlots = 20_000;
+
         public async Task<DownloadClientItem> GetImportItemAsync(
             DownloadClientConfiguration client,
             DownloadClientItem item,
@@ -92,6 +96,11 @@ namespace Listenarr.Infrastructure.DownloadClients.Sabnzbd
             string nzoId,
             CancellationToken ct)
         {
+            if (string.IsNullOrWhiteSpace(nzoId))
+            {
+                return null;
+            }
+
             try
             {
                 var requestContext = requestBuilder.CreateContext(client);
@@ -101,48 +110,78 @@ namespace Listenarr.Infrastructure.DownloadClients.Sabnzbd
                     return null;
                 }
 
-                var historyUrl = requestBuilder.BuildUrl(requestContext, new Dictionary<string, string>
-                {
-                    ["mode"] = "history",
-                    ["output"] = "json"
-                });
                 var http = httpFactory.CreateClient(clientType);
-                var historyResp = await http.GetAsync(historyUrl, ct);
+                var start = 0;
+                string? previousPageSignature = null;
 
-                if (!historyResp.IsSuccessStatusCode)
+                while (start < MaxHistorySlots)
                 {
-                    logger.LogWarning("Failed to query SABnzbd history for download {NzoId}", nzoId);
-                    return null;
-                }
-
-                var historyText = await historyResp.Content.ReadAsStringAsync(ct);
-                if (string.IsNullOrWhiteSpace(historyText))
-                {
-                    return null;
-                }
-
-                var doc = JsonDocument.Parse(historyText);
-                if (!doc.RootElement.TryGetProperty("history", out var history) ||
-                    !history.TryGetProperty("slots", out var slots) ||
-                    slots.ValueKind != JsonValueKind.Array)
-                {
-                    logger.LogWarning("Invalid SABnzbd history response format");
-                    return null;
-                }
-
-                foreach (var slot in slots.EnumerateArray())
-                {
-                    var slotNzoId = slot.TryGetProperty("nzo_id", out var nzo) ? nzo.GetString() ?? string.Empty : string.Empty;
-                    if (!string.Equals(slotNzoId, nzoId, StringComparison.OrdinalIgnoreCase)) continue;
-
-                    var storage = SabnzbdImportPathResolver.GetStoragePath(slot);
-                    if (string.IsNullOrWhiteSpace(storage))
+                    var historyUrl = requestBuilder.BuildUrl(requestContext, new Dictionary<string, string>
                     {
-                        logger.LogWarning("No storage path found for SABnzbd download {NzoId}", nzoId);
+                        ["mode"] = "history",
+                        ["output"] = "json",
+                        ["nzo_ids"] = nzoId,
+                        ["start"] = start.ToString(CultureInfo.InvariantCulture),
+                        ["limit"] = HistoryPageSize.ToString(CultureInfo.InvariantCulture)
+                    });
+                    var historyResp = await http.GetAsync(historyUrl, ct);
+                    if (!historyResp.IsSuccessStatusCode)
+                    {
+                        logger.LogWarning("Failed to query SABnzbd history for download {NzoId}", nzoId);
                         return null;
                     }
 
-                    return storage;
+                    var historyText = await historyResp.Content.ReadAsStringAsync(ct);
+                    if (string.IsNullOrWhiteSpace(historyText))
+                    {
+                        return null;
+                    }
+
+                    using var doc = JsonDocument.Parse(historyText);
+                    if (!doc.RootElement.TryGetProperty("history", out var history) ||
+                        !history.TryGetProperty("slots", out var slots) ||
+                        slots.ValueKind != JsonValueKind.Array)
+                    {
+                        logger.LogWarning("Invalid SABnzbd history response format");
+                        return null;
+                    }
+
+                    if (TryGetStorage(slots, nzoId, out var storage))
+                    {
+                        if (string.IsNullOrWhiteSpace(storage))
+                        {
+                            logger.LogWarning("No storage path found for SABnzbd download {NzoId}", nzoId);
+                            return null;
+                        }
+
+                        return storage;
+                    }
+
+                    var returned = slots.GetArrayLength();
+                    if (returned == 0)
+                    {
+                        logger.LogWarning("Download {NzoId} not found in SABnzbd history", nzoId);
+                        return null;
+                    }
+
+                    var pageSignature = PageSignature(slots);
+                    if (pageSignature == previousPageSignature)
+                    {
+                        logger.LogWarning("Download {NzoId} not found in SABnzbd history", nzoId);
+                        return null;
+                    }
+
+                    previousPageSignature = pageSignature;
+                    var exhausted = TryGetHistoryCount(history, out var total)
+                        ? start + returned >= total
+                        : returned < HistoryPageSize;
+                    if (exhausted)
+                    {
+                        logger.LogWarning("Download {NzoId} not found in SABnzbd history", nzoId);
+                        return null;
+                    }
+
+                    start += returned;
                 }
 
                 logger.LogWarning("Download {NzoId} not found in SABnzbd history", nzoId);
@@ -153,6 +192,53 @@ namespace Listenarr.Infrastructure.DownloadClients.Sabnzbd
                 logger.LogWarning(ex, "Error resolving import item for SABnzbd download {NzoId}", nzoId);
                 return null;
             }
+        }
+
+        private static bool TryGetStorage(JsonElement slots, string nzoId, out string? storage)
+        {
+            foreach (var slot in slots.EnumerateArray())
+            {
+                var slotNzoId = slot.TryGetProperty("nzo_id", out var nzo) ? nzo.GetString() ?? string.Empty : string.Empty;
+                if (!string.Equals(slotNzoId, nzoId, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                storage = SabnzbdImportPathResolver.GetStoragePath(slot);
+                return true;
+            }
+
+            storage = null;
+            return false;
+        }
+
+        private static bool TryGetHistoryCount(JsonElement history, out int count)
+        {
+            count = 0;
+            if (!history.TryGetProperty("noofslots", out var total))
+            {
+                return false;
+            }
+
+            if (total.ValueKind == JsonValueKind.Number && total.TryGetInt32(out count))
+            {
+                return true;
+            }
+
+            return total.ValueKind == JsonValueKind.String
+                && int.TryParse(total.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out count);
+        }
+
+        private static string PageSignature(JsonElement slots)
+        {
+            var ids = new string[slots.GetArrayLength()];
+            var index = 0;
+            foreach (var slot in slots.EnumerateArray())
+            {
+                ids[index++] = slot.TryGetProperty("nzo_id", out var nzo) ? nzo.GetString() ?? string.Empty : string.Empty;
+            }
+
+            return string.Join('\n', ids);
         }
     }
 }

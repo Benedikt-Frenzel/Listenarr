@@ -273,6 +273,70 @@ namespace Listenarr.Tests.Features.Infrastructure.DownloadClients.Sabnzbd
         }
 
         [Fact]
+        public async Task GetImportItemAsync_ResolvesHistoryJobPastTheFirstPage()
+        {
+            var source = FileService.GetTempDirectory("sabnzbd-history-page-2");
+            var stalePath = Path.Join(FileService.GetTempDirectory("sabnzbd-stale-page"), "missing-folder");
+            const string targetId = "SABnzbd_nzo_page2";
+            sabnzbdApiMock.FilterHistoryByNzoIds = false;
+            sabnzbdApiMock.HistorySlots = Enumerable.Range(0, 100)
+                .Select(index => ($"filler-{index}", "/downloads/filler"))
+                .Append((targetId, source))
+                .ToList();
+            sabnzbdApiMock.ResetRequestHistory();
+
+            var adapter = MockUtils.CreateSabnzbdAdapter(_provider);
+            var original = new QueueItem
+            {
+                Id = targetId,
+                Title = "past the first page",
+                Status = "completed",
+                ContentPath = stalePath
+            };
+
+            var resolved = await adapter.GetImportItemAsync(_client, new Download { Id = "download-page-2" }, original);
+
+            Assert.Equal(source, resolved.ContentPath);
+            var historyRequests = sabnzbdApiMock.RequestHistory
+                .Where(request => request.RequestUri!.Query.Contains("mode=history", StringComparison.Ordinal))
+                .ToList();
+            Assert.Equal(2, historyRequests.Count);
+            Assert.Contains("start=0", historyRequests[0].RequestUri!.Query, StringComparison.Ordinal);
+            Assert.Contains("start=100", historyRequests[1].RequestUri!.Query, StringComparison.Ordinal);
+            Assert.Contains("nzo_ids=SABnzbd_nzo_page2", historyRequests[0].RequestUri!.Query, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task GetImportItemAsync_ResolvesHistoryJobByNzoIdWithoutPaging()
+        {
+            var source = FileService.GetTempDirectory("sabnzbd-history-nzo");
+            var stalePath = Path.Join(FileService.GetTempDirectory("sabnzbd-stale-nzo"), "missing-folder");
+            const string targetId = "SABnzbd_nzo_filtered";
+            sabnzbdApiMock.FilterHistoryByNzoIds = true;
+            sabnzbdApiMock.HistorySlots = Enumerable.Range(0, 100)
+                .Select(index => ($"filler-{index}", "/downloads/filler"))
+                .Append((targetId, source))
+                .ToList();
+            sabnzbdApiMock.ResetRequestHistory();
+
+            var adapter = MockUtils.CreateSabnzbdAdapter(_provider);
+            var original = new QueueItem
+            {
+                Id = targetId,
+                Title = "filtered by id",
+                Status = "completed",
+                ContentPath = stalePath
+            };
+
+            var resolved = await adapter.GetImportItemAsync(_client, new Download { Id = "download-nzo" }, original);
+
+            Assert.Equal(source, resolved.ContentPath);
+            var historyRequest = Assert.Single(sabnzbdApiMock.RequestHistory,
+                request => request.RequestUri!.Query.Contains("mode=history", StringComparison.Ordinal));
+            Assert.Contains("nzo_ids=SABnzbd_nzo_filtered", historyRequest.RequestUri!.Query, StringComparison.Ordinal);
+        }
+
+        [Fact]
         public async Task PollSABnzbd_SchedulesRetry_AndFinalizes_WhenFileArrives()
         {
             var sourceDirectory = FileService.GetTempDirectory("listenarr-test");

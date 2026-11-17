@@ -1,6 +1,6 @@
+using System.Text.Json;
 using System.Web;
 using Listenarr.Tests.Common;
-
 namespace Listenarr.Tests.Mocks.Api
 {
     public class SabnzbdApiMock : BaseApiMock
@@ -15,6 +15,8 @@ namespace Listenarr.Tests.Mocks.Api
         public bool GetCatsTimesOut { get; set; }
         public System.Net.HttpStatusCode HistoryStatusCode { get; set; } = System.Net.HttpStatusCode.OK;
         public string? HistoryResponseOverride { get; set; }
+        public List<(string Id, string Storage)>? HistorySlots { get; set; }
+        public bool FilterHistoryByNzoIds { get; set; }
         public List<Uri> RemovalRequests { get; } = [];
 
         public SabnzbdApiMock()
@@ -32,6 +34,11 @@ namespace Listenarr.Tests.Mocks.Api
             if (HistoryResponseOverride != null)
             {
                 return MockUtils.GetCannedResponse(HistoryResponseOverride);
+            }
+
+            if (HistorySlots != null)
+            {
+                return MockUtils.GetCannedResponse(BuildPagedHistory(request));
             }
 
             var response = """
@@ -147,6 +154,31 @@ namespace Listenarr.Tests.Mocks.Api
                 return await GetQueue(request, ct);
             }
             return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
+        }
+
+        private string BuildPagedHistory(HttpRequestMessage request)
+        {
+            var query = HttpUtility.ParseQueryString(request.RequestUri?.Query ?? "");
+            var slots = HistorySlots ?? [];
+            var requestedIds = query["nzo_ids"];
+            if (FilterHistoryByNzoIds && !string.IsNullOrWhiteSpace(requestedIds))
+            {
+                var wanted = new HashSet<string>(
+                    requestedIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+                    StringComparer.OrdinalIgnoreCase);
+                slots = slots.Where(slot => wanted.Contains(slot.Id)).ToList();
+            }
+
+            var total = slots.Count;
+            var start = int.TryParse(query["start"], out var parsedStart) && parsedStart > 0 ? parsedStart : 0;
+            var limit = int.TryParse(query["limit"], out var parsedLimit) && parsedLimit > 0 ? parsedLimit : total;
+            var page = slots.Skip(start).Take(limit).Select(slot => new
+            {
+                nzo_id = slot.Id,
+                storage = slot.Storage,
+                status = "Completed"
+            });
+            return JsonSerializer.Serialize(new { history = new { noofslots = total, slots = page } });
         }
     }
 }
