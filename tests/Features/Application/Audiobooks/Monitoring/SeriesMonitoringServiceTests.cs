@@ -257,6 +257,38 @@ namespace Listenarr.Tests.Features.Application.Audiobooks.Monitoring
             Assert.Equal("2", metadata.SeriesNumber);
         }
 
+        [Fact]
+        public async Task UpdateMonitoredSeriesAsync_KeepsTheSameIdAndNameLookupIgnoresLanguage()
+        {
+            Init(services => services.WithSingleton(_seriesCatalogService.Object));
+            _seriesCatalogService
+                .Setup(service => service.GetCatalogAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<int>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((SeriesCatalogFetchResult?)null);
+
+            var service = _provider.GetRequiredService<ISeriesMonitoringService>();
+            var created = await service.MonitorSeriesAsync(new MonitorSeriesRequest
+            {
+                Name = "The Dune Sequence",
+                Region = "de",
+                Language = "english"
+            });
+            var id = created.MonitoredSeries!.Id;
+
+            var updated = await service.UpdateMonitoredSeriesAsync(id, "de", "german");
+
+            Assert.Equal(id, updated.MonitoredSeries!.Id);
+            Assert.Equal("de", updated.MonitoredSeries.Region);
+            Assert.Equal("german", updated.MonitoredSeries.Language);
+            Assert.Equal(id, (await service.GetMonitoredSeriesByNameAsync("the dune sequence"))!.Id);
+            Assert.Null(await service.GetMonitoredSeriesAsync("The Dune Sequence", "de", "english"));
+        }
+
         private async Task<AudibleBookMetadata> CaptureAddedBookMetadataAsync(
             string seriesName,
             string seriesAsin,

@@ -62,6 +62,14 @@ namespace Listenarr.Infrastructure.Persistence.Repositories
                 .FirstOrDefaultAsync(s => s.SeriesNameNormalized == normalizedName && s.Region == region && s.Language == language, ct);
         }
 
+        public async Task<MonitoredSeries?> GetByNormalizedNameAsync(string normalizedName, CancellationToken ct = default)
+        {
+            return await _db.MonitoredSeries
+                .Where(series => series.SeriesNameNormalized == normalizedName)
+                .OrderByDescending(series => series.UpdatedAt)
+                .ThenByDescending(series => series.Id)
+                .FirstOrDefaultAsync(ct);
+        }
         public async Task<List<MonitoredSeries>> GetDueForSyncAsync(DateTime cutoff, CancellationToken ct = default)
         {
             return await _db.MonitoredSeries

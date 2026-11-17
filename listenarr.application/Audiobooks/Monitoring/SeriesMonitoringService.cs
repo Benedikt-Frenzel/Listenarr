@@ -117,6 +117,65 @@ namespace Listenarr.Application.Audiobooks.Monitoring
             return await _series.GetByNameRegionLanguageAsync(normalizedName, normalizedRegion, normalizedLanguage, cancellationToken);
         }
 
+        public async Task<MonitoredSeries?> GetMonitoredSeriesByNameAsync(
+            string name,
+            CancellationToken cancellationToken = default)
+        {
+            var normalizedName = NormalizeSeriesName(name);
+            if (string.IsNullOrWhiteSpace(normalizedName))
+            {
+                return null;
+            }
+
+            return await _series.GetByNormalizedNameAsync(normalizedName, cancellationToken);
+        }
+
+        public async Task<MonitorSeriesOperationResult> UpdateMonitoredSeriesAsync(
+            int id,
+            string region,
+            string language,
+            CancellationToken cancellationToken = default)
+        {
+            var monitoredSeries = await _series.GetByIdAsync(id, cancellationToken);
+            if (monitoredSeries == null)
+            {
+                return new MonitorSeriesOperationResult
+                {
+                    SyncResult = new MonitorSeriesSyncResult
+                    {
+                        Succeeded = false,
+                        FailedCount = 1,
+                        ErrorMessage = "Monitored series not found."
+                    }
+                };
+            }
+
+            var normalizedRegion = NormalizeRegion(region);
+            var normalizedLanguage = NormalizeLanguage(language, fallbackToEnglish: true);
+            var collision = await _series.GetByNameRegionLanguageAsync(
+                monitoredSeries.SeriesNameNormalized,
+                normalizedRegion,
+                normalizedLanguage,
+                cancellationToken);
+            if (collision != null && collision.Id != monitoredSeries.Id)
+            {
+                throw new InvalidOperationException(
+                    "A monitor for this series, region, and language already exists.");
+            }
+
+            monitoredSeries.Region = normalizedRegion;
+            monitoredSeries.Language = normalizedLanguage;
+            monitoredSeries.UpdatedAt = DateTime.UtcNow;
+            monitoredSeries = await _series.UpsertAsync(monitoredSeries, cancellationToken);
+
+            var syncResult = await SyncSeriesInternalAsync(monitoredSeries, cancellationToken);
+            return new MonitorSeriesOperationResult
+            {
+                MonitoredSeries = monitoredSeries,
+                SyncResult = syncResult
+            };
+        }
+
         public async Task<MonitorSeriesOperationResult> MonitorSeriesAsync(
             MonitorSeriesRequest request,
             CancellationToken cancellationToken = default)

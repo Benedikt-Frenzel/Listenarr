@@ -311,6 +311,16 @@
               <component v-else :is="isCurrentSeriesMonitored ? PhEye : PhPlus" />
               {{ isCurrentSeriesMonitored ? 'Monitoring Series' : 'Monitor Series' }}
             </button>
+            <button
+              v-if="isCurrentSeriesMonitored"
+              class="toolbar-btn"
+              :disabled="seriesMonitoringBusy || seriesMetadataRefreshBusy"
+              @click="showEditSeriesMonitoring = true"
+              title="Edit series region and language"
+            >
+              <PhPencil />
+              Edit Monitoring
+            </button>
           </div>
         </div>
         <div class="toolbar-filters">
@@ -767,6 +777,15 @@
       @close="closeAddLibraryModal"
       @added="handleBookAdded"
     />
+
+    <EditSeriesMonitoringModal
+      :visible="showEditSeriesMonitoring"
+      :region="seriesCatalogRegion"
+      :language="preferredSeriesMonitoringLanguage"
+      :busy="seriesMonitoringBusy"
+      @close="showEditSeriesMonitoring = false"
+      @save="saveSeriesMonitoring"
+    />
   </div>
 </template>
 
@@ -805,6 +824,7 @@ import { useToast } from '@/services/toastService'
 import EditAudiobookModal from '@/components/domain/audiobook/EditAudiobookModal.vue'
 import AddLibraryModal from '@/components/domain/audiobook/AddLibraryModal.vue'
 import BulkEditModal from '@/components/domain/collection/BulkEditModal.vue'
+import EditSeriesMonitoringModal from '@/components/domain/collection/EditSeriesMonitoringModal.vue'
 import RenamePreviewModal from '@/components/domain/organize/RenamePreviewModal.vue'
 import DeleteConfirmationModal from '@/components/feedback/DeleteConfirmationModal.vue'
 import { showConfirm } from '@/composables/useConfirm'
@@ -899,6 +919,9 @@ const seriesMetadataRefreshBusy = ref(false)
 const seriesMonitoringBusy = ref(false)
 const seriesMonitoringStatus = ref<MonitoredSeries | null>(null)
 const seriesMonitoringStatusRequestId = ref(0)
+const seriesMonitorRegionOverride = ref<string | null>(null)
+const seriesMonitorLanguageOverride = ref<string | null>(null)
+const showEditSeriesMonitoring = ref(false)
 const authorMonitoringBusy = ref(false)
 const authorMonitoringStatus = ref<MonitoredAuthor | null>(null)
 const authorMonitoringStatusRequestId = ref(0)
@@ -938,11 +961,30 @@ const isCurrentAuthorMonitored = computed(() => Boolean(authorMonitoringStatus.v
 const authorMonitoringContextLabel = computed(() => {
   return `${authorRegionLabel.value} / ${authorLanguageLabel.value}`
 })
-const seriesCatalogRegion = authorCatalogRegion
-const seriesRegionLabel = authorRegionLabel
-const preferredSeriesMonitoringLanguage = preferredAuthorMonitoringLanguage
-const preferredSeriesCatalogLanguageFilter = preferredAuthorCatalogLanguageFilter
-const seriesLanguageLabel = authorLanguageLabel
+const seriesCatalogRegion = computed(
+  () => seriesMonitorRegionOverride.value ?? authorCatalogRegion.value,
+)
+const preferredSeriesMonitoringLanguage = computed(
+  () => seriesMonitorLanguageOverride.value ?? preferredAuthorMonitoringLanguage.value,
+)
+const preferredSeriesCatalogLanguageFilter = computed(() =>
+  seriesMonitorLanguageOverride.value
+    ? getPreferredSearchLanguageFilter(seriesMonitorLanguageOverride.value)
+    : preferredAuthorCatalogLanguageFilter.value,
+)
+const seriesRegionLabel = computed(
+  () =>
+    searchRegionOptions.find((option) => option.value === seriesCatalogRegion.value)?.label ??
+    seriesCatalogRegion.value.toUpperCase(),
+)
+const seriesLanguageLabel = computed(() => {
+  if (preferredSeriesMonitoringLanguage.value === 'all') return 'All Languages'
+  return (
+    preferredSearchLanguageOptions.find(
+      (option) => option.value === preferredSeriesMonitoringLanguage.value,
+    )?.label ?? preferredSeriesMonitoringLanguage.value
+  )
+})
 const isCurrentSeriesMonitored = computed(() => Boolean(seriesMonitoringStatus.value))
 const seriesMetadataContextLabel = computed(() => {
   return `${seriesRegionLabel.value} / ${seriesLanguageLabel.value}`
@@ -1791,11 +1833,7 @@ async function loadSeriesMonitoringStatus() {
   const requestId = ++seriesMonitoringStatusRequestId.value
 
   try {
-    const response = await apiService.getSeriesMonitoringStatus(
-      name.value,
-      seriesCatalogRegion.value,
-      preferredSeriesMonitoringLanguage.value,
-    )
+    const response = await apiService.getSeriesMonitoringStatus(name.value)
 
     if (requestId !== seriesMonitoringStatusRequestId.value) return
     seriesMonitoringStatus.value = response.monitoredSeries ?? null
@@ -1836,8 +1874,9 @@ async function loadCollectionData(forceLibrary = false, forceAuthorMetadataRefre
       forceAuthorMetadataRefresh,
     )
   } else if (isSeriesCollection.value) {
-    const refreshedCatalog = await loadSeriesCatalog(forceAuthorMetadataRefresh)
     await loadSeriesMonitoringStatus()
+    applySeriesMonitorContext()
+    const refreshedCatalog = await loadSeriesCatalog(forceAuthorMetadataRefresh)
     await loadSeriesLookup(
       refreshedCatalog?.series?.asin || seriesCatalog.value?.series?.asin,
       forceAuthorMetadataRefresh,
@@ -2079,10 +2118,12 @@ async function toggleSeriesMonitoring() {
     if (seriesMonitoringStatus.value) {
       await apiService.unmonitorSeries(seriesMonitoringStatus.value.id)
       seriesMonitoringStatus.value = null
+      applySeriesMonitorContext()
       toast.success(
         'Series unmonitored',
         `"${name.value}" will no longer be checked for future audiobooks.`,
       )
+      await loadSeriesCatalog(true)
       return
     }
 
@@ -2122,6 +2163,47 @@ async function toggleSeriesMonitoring() {
         language: preferredSeriesMonitoringLanguage.value,
       },
     })
+  } finally {
+    seriesMonitoringBusy.value = false
+  }
+}
+
+function applySeriesMonitorContext() {
+  const monitor = seriesMonitoringStatus.value
+  if (!monitor) {
+    seriesMonitorRegionOverride.value = null
+    seriesMonitorLanguageOverride.value = null
+    return
+  }
+
+  seriesMonitorRegionOverride.value = normalizeSearchRegion(monitor.region)
+  seriesMonitorLanguageOverride.value = normalizePreferredSearchLanguage(monitor.language)
+}
+
+async function saveSeriesMonitoring(payload: { region: string; language: string }) {
+  if (!seriesMonitoringStatus.value || seriesMonitoringBusy.value) return
+
+  seriesMonitoringBusy.value = true
+  try {
+    const response = await apiService.updateSeriesMonitoring(seriesMonitoringStatus.value.id, payload)
+    seriesMonitoringStatus.value = response.monitoredSeries
+    applySeriesMonitorContext()
+    showEditSeriesMonitoring.value = false
+    toast.success(
+      'Series monitoring updated',
+      `${seriesRegionLabel.value} / ${seriesLanguageLabel.value}`,
+    )
+    await loadSeriesCatalog(true)
+    if (response.failedCount > 0 || response.errorMessage) {
+      toast.warning(
+        'Sync completed with warnings',
+        response.errorMessage ||
+          `${response.failedCount} audiobook${response.failedCount === 1 ? '' : 's'} could not be added.`,
+      )
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to update series monitoring.'
+    toast.error('Series monitoring failed', message)
   } finally {
     seriesMonitoringBusy.value = false
   }

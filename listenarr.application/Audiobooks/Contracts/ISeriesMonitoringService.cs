@@ -26,6 +26,16 @@ namespace Listenarr.Application.Audiobooks.Contracts
             string language,
             CancellationToken cancellationToken = default);
 
+        Task<MonitoredSeries?> GetMonitoredSeriesByNameAsync(
+            string name,
+            CancellationToken cancellationToken = default);
+
+        Task<MonitorSeriesOperationResult> UpdateMonitoredSeriesAsync(
+            int id,
+            string region,
+            string language,
+            CancellationToken cancellationToken = default);
+
         Task<MonitorSeriesOperationResult> MonitorSeriesAsync(
             MonitorSeriesRequest request,
             CancellationToken cancellationToken = default);

@@ -519,13 +519,25 @@ class ApiService {
 
   async getSeriesMonitoringStatus(
     name: string,
-    region: string = 'us',
-    language: string = 'all',
+    region?: string,
+    language?: string,
   ): Promise<SeriesMonitoringStatusResponse> {
-    const params = new URLSearchParams({ name, region, language })
+    const params = new URLSearchParams({ name })
+    if (region) params.set('region', region)
+    if (language) params.set('language', language)
     return this.request<SeriesMonitoringStatusResponse>(
       `/series/monitoring/status?${params.toString()}`,
     )
+  }
+
+  async updateSeriesMonitoring(
+    id: number,
+    payload: { region: string; language: string },
+  ): Promise<MonitorSeriesResponse> {
+    return this.request<MonitorSeriesResponse>(`/series/monitoring/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    })
   }
 
   async monitorSeries(payload: {

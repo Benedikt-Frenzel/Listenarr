@@ -39,8 +39,8 @@ namespace Listenarr.Api.Features.Library
         [ProducesResponseType(typeof(SeriesMonitoringStatusResponse), StatusCodes.Status200OK)]
         public async Task<ActionResult<SeriesMonitoringStatusResponse>> GetStatus(
             [FromQuery] string name,
-            [FromQuery] string region = "us",
-            [FromQuery] string language = "all",
+            [FromQuery] string? region = null,
+            [FromQuery] string? language = null,
             CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(name))
@@ -50,11 +50,13 @@ namespace Listenarr.Api.Features.Library
 
             try
             {
-                var monitoredSeries = await _seriesMonitoringService.GetMonitoredSeriesAsync(
-                    name,
-                    region,
-                    language,
-                    cancellationToken);
+                var monitoredSeries = string.IsNullOrWhiteSpace(region) && string.IsNullOrWhiteSpace(language)
+                    ? await _seriesMonitoringService.GetMonitoredSeriesByNameAsync(name, cancellationToken)
+                    : await _seriesMonitoringService.GetMonitoredSeriesAsync(
+                        name,
+                        string.IsNullOrWhiteSpace(region) ? "us" : region,
+                        string.IsNullOrWhiteSpace(language) ? "all" : language,
+                        cancellationToken);
 
                 return Ok(new SeriesMonitoringStatusResponse
                 {
@@ -102,6 +104,55 @@ namespace Listenarr.Api.Features.Library
                 _logger.LogError(ex, "Failed to enable monitoring for series {Series}", request?.Name);
                 return StatusCode(StatusCodes.Status500InternalServerError, "Internal server error");
             }
+        }
+
+        [HttpPut("{id:int}")]
+        [ProducesResponseType(typeof(MonitorSeriesResponse), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        [ProducesResponseType(StatusCodes.Status409Conflict)]
+        public async Task<ActionResult<MonitorSeriesResponse>> UpdateSeries(
+            int id,
+            [FromBody] UpdateSeriesMonitoringRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var result = await _seriesMonitoringService.UpdateMonitoredSeriesAsync(
+                    id,
+                    request.Region,
+                    request.Language,
+                    cancellationToken);
+                if (result.MonitoredSeries == null)
+                {
+                    return NotFound(new { message = result.SyncResult.ErrorMessage ?? "Monitored series not found." });
+                }
+
+                return Ok(new MonitorSeriesResponse
+                {
+                    Message = "Series monitoring updated",
+                    MonitoredSeries = ToResponse(result.MonitoredSeries),
+                    AddedCount = result.SyncResult.AddedCount,
+                    ExistingCount = result.SyncResult.ExistingCount,
+                    FailedCount = result.SyncResult.FailedCount,
+                    ErrorMessage = result.SyncResult.ErrorMessage
+                });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Conflict(new { message = ex.Message });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && ex is not OutOfMemoryException && ex is not StackOverflowException)
+            {
+                _logger.LogError(ex, "Failed to update monitoring for series {SeriesId}", id);
+                return StatusCode(StatusCodes.Status500InternalServerError, "Internal server error");
+            }
+        }
+
+        public sealed class UpdateSeriesMonitoringRequest
+        {
+            public string Region { get; set; } = "us";
+
+            public string Language { get; set; } = "all";
         }
 
         [HttpDelete("{id:int}")]

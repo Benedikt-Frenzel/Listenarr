@@ -1460,7 +1460,7 @@ describe('CollectionView', () => {
     await flushPromises()
 
     expect(mockGetSeriesCatalog).toHaveBeenCalledWith('Mistborn', 'uk', false)
-    expect(mockGetSeriesMonitoringStatus).toHaveBeenCalledWith('Mistborn', 'uk', 'german')
+    expect(mockGetSeriesMonitoringStatus).toHaveBeenCalledWith('Mistborn')
     expect(wrapper.find('.author-hero-meta').text()).toContain('United Kingdom (UK) / German')
 
     const monitorButton = wrapper.find('.author-monitor-btn')
