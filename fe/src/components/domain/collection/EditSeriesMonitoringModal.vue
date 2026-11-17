@@ -67,6 +67,7 @@ watch(
 
 function submit() {
   emit('save', { region: region.value, language: language.value })
+  emit('close')
 }
 </script>
 

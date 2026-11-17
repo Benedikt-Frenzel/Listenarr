@@ -2183,12 +2183,13 @@ function applySeriesMonitorContext() {
 async function saveSeriesMonitoring(payload: { region: string; language: string }) {
   if (!seriesMonitoringStatus.value || seriesMonitoringBusy.value) return
 
+  const monitorId = seriesMonitoringStatus.value.id
+  showEditSeriesMonitoring.value = false
   seriesMonitoringBusy.value = true
   try {
-    const response = await apiService.updateSeriesMonitoring(seriesMonitoringStatus.value.id, payload)
+    const response = await apiService.updateSeriesMonitoring(monitorId, payload)
     seriesMonitoringStatus.value = response.monitoredSeries
     applySeriesMonitorContext()
-    showEditSeriesMonitoring.value = false
     toast.success(
       'Series monitoring updated',
       `${seriesRegionLabel.value} / ${seriesLanguageLabel.value}`,
